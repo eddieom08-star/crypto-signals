@@ -1,7 +1,7 @@
 services:
   - type: worker
     name: crypto-signal-bot
-    runtime: docker
+    env: docker
     dockerfilePath: ./Dockerfile
     region: oregon
     plan: starter
@@ -16,7 +16,4 @@ services:
         value: "70"
       - key: SIGNAL_COOLDOWN
         value: "30"
-      - key: PORT
-        value: "8080"
-    healthCheckPath: /health
     autoDeploy: true
