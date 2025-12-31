@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 10, 10, 20;
+  --background-end-rgb: 20, 20, 40;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+  min-height: 100vh;
+}
+
+.card {
+  @apply bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700 p-6;
+}
+
+.signal-strong {
+  @apply bg-green-500/20 border-green-500;
+}
+
+.signal-moderate {
+  @apply bg-yellow-500/20 border-yellow-500;
+}
+
+.signal-weak {
+  @apply bg-red-500/20 border-red-500;
+}
+
+.risk-low {
+  @apply text-green-400;
+}
+
+.risk-medium {
+  @apply text-yellow-400;
+}
+
+.risk-high {
+  @apply text-orange-400;
+}
+
+.risk-critical {
+  @apply text-red-400;
+}

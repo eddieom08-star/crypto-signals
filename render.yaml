@@ -16,4 +16,8 @@ services:
         value: "70"
       - key: SIGNAL_COOLDOWN
         value: "30"
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
     autoDeploy: true
