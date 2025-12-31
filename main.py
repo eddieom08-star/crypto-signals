@@ -14,6 +14,7 @@ from analyzer import SignalAnalyzer
 from config import Config, WATCHLIST, load_config
 from fetcher import DEXScreenerClient
 from notifier import TelegramNotifier
+from security_checker import SecurityChecker
 
 # Configure logging
 logging.basicConfig(
@@ -32,6 +33,7 @@ class CryptoSignalBot:
         self._config = config
         self._fetcher = DEXScreenerClient(config)
         self._analyzer = SignalAnalyzer(config.scoring_weights)
+        self._security_checker = SecurityChecker(config.request_timeout)
         self._notifier = TelegramNotifier(config)
         self._running = False
         self._scan_count = 0
@@ -99,18 +101,23 @@ class CryptoSignalBot:
                     logger.debug(f"No data available for {symbol}")
                     continue
 
-                # Analyze signal
-                signal = self._analyzer.analyze(token_data)
-
-                logger.debug(
-                    f"{symbol}: Score {signal.total_score}/100 "
-                    f"(L:{signal.liquidity_score} V:{signal.volume_ratio_score} "
-                    f"M:{signal.momentum_score} B:{signal.buy_pressure_score} "
-                    f"T:{signal.trend_score})"
+                # Fetch security data
+                security_report = await self._security_checker.analyze_token(
+                    token_config.address
                 )
 
-                # Send alert if signal meets threshold
-                if signal.total_score >= self._config.signal_threshold:
+                # Analyze signal with security data
+                signal = self._analyzer.analyze(token_data, security_report)
+
+                logger.debug(
+                    f"{symbol}: Score {signal.total_score}/100 PoP:{signal.pop.pop_score}% "
+                    f"(L:{signal.liquidity_score} V:{signal.volume_ratio_score} "
+                    f"M:{signal.momentum_score} B:{signal.buy_pressure_score} "
+                    f"T:{signal.trend_score} S:{signal.security_score} P:-{signal.bundle_penalty})"
+                )
+
+                # Send alert if signal meets threshold and PoP is acceptable
+                if signal.is_valid_signal:
                     sent = await self._notifier.send_signal(signal)
                     if sent:
                         self._signals_sent += 1

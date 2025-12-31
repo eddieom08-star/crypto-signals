@@ -84,6 +84,34 @@ class TelegramNotifier:
             "NO SIGNAL": "⚫",
         }.get(signal.signal_strength, "⚫")
 
+        # Risk level emoji
+        risk_emoji = {
+            "LOW": "🟢",
+            "MEDIUM": "🟡",
+            "HIGH": "🟠",
+            "CRITICAL": "🔴",
+            "UNKNOWN": "⚪",
+        }.get(signal.risk_level, "⚪")
+
+        # PoP confidence emoji
+        confidence_emoji = {
+            "HIGH": "🎯",
+            "MEDIUM": "📊",
+            "LOW": "⚠️",
+        }.get(signal.pop.confidence, "📊")
+
+        # Lock status
+        lock_status = f"🔒 {signal.lock_percentage:.0f}%" if signal.is_locked else "🔓 NOT LOCKED"
+
+        # Bundle status
+        bundle_status = f"⚠️ BUNDLED ({signal.bundle_percentage:.0f}%)" if signal.is_bundled else "✅ Not bundled"
+
+        # Security warnings
+        warnings_text = ""
+        if signal.security_warnings:
+            warnings_list = "\n".join(f"  • {w}" for w in signal.security_warnings[:5])
+            warnings_text = f"\n<b>Warnings:</b>\n{warnings_list}"
+
         message = f"""
 <b>🚀 CRYPTO SIGNAL ALERT</b>
 
@@ -93,7 +121,28 @@ class TelegramNotifier:
 
 ━━━━━━━━━━━━━━━━━━━━
 
-<b>📊 ANALYSIS BREAKDOWN</b>
+<b>🎲 PROBABILITY OF PROFIT</b>
+<b>PoP Score:</b> {signal.pop.pop_score}% {confidence_emoji} ({signal.pop.confidence})
+<b>Expected Return:</b> {signal.pop.expected_return:+.1f}%
+<b>Max Drawdown:</b> -{signal.pop.max_drawdown:.1f}%
+
+<b>PoP Factors:</b>
+• Momentum: {signal.pop.factors.get('momentum', 0)}%
+• Buy Pressure: {signal.pop.factors.get('buy_pressure', 0)}%
+• Security: {signal.pop.factors.get('security', 0)}%
+• Bundle Impact: -{signal.pop.factors.get('bundle_impact', 0)}%
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>🔐 SECURITY ANALYSIS</b>
+<b>Risk Level:</b> {risk_emoji} {signal.risk_level}
+<b>Liquidity:</b> {lock_status}
+<b>Bundle:</b> {bundle_status}
+<b>Security Score:</b> +{signal.security_score} | Penalty: -{signal.bundle_penalty}{warnings_text}
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>📊 TECHNICAL SCORES</b>
 • Liquidity: {signal.liquidity_score}/20
 • Volume Ratio: {signal.volume_ratio_score}/20
 • Momentum: {signal.momentum_score}/25
@@ -104,12 +153,12 @@ class TelegramNotifier:
 
 <b>💰 TRADE SETUP</b>
 <b>Entry:</b> ${self._format_price(signal.entry_price)}
-<b>Stop Loss:</b> ${self._format_price(signal.stop_loss)} (-8%)
+<b>Stop Loss:</b> ${self._format_price(signal.stop_loss)}
 
 <b>Take Profits:</b>
-• TP1: ${self._format_price(signal.take_profit_1)} (+15%)
-• TP2: ${self._format_price(signal.take_profit_2)} (+30%)
-• TP3: ${self._format_price(signal.take_profit_3)} (+50%)
+• TP1: ${self._format_price(signal.take_profit_1)}
+• TP2: ${self._format_price(signal.take_profit_2)}
+• TP3: ${self._format_price(signal.take_profit_3)}
 
 <b>R:R Ratio:</b> 1:{signal.risk_reward_ratio}
 
@@ -119,7 +168,7 @@ class TelegramNotifier:
 • Position size: Max 2-5% of portfolio
 • Scale out at each TP level
 • Move SL to entry after TP1 hit
-• Never risk more than you can afford to lose
+• Higher bundle % = smaller position
 
 <b>📍 Contract:</b>
 <code>{signal.address}</code>

@@ -1,4 +1,4 @@
-"""Signal analyzer with technical indicators and scoring."""
+"""Signal analyzer with technical indicators, security scoring, and PoP calculation."""
 
 import logging
 from dataclasses import dataclass
@@ -6,8 +6,19 @@ from typing import Optional
 
 from config import ScoringWeights
 from fetcher import TokenData
+from security_checker import SecurityReport, RiskLevel
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PoPAnalysis:
+    """Probability of Profit analysis."""
+    pop_score: int  # 0-100 percentage
+    confidence: str  # LOW, MEDIUM, HIGH
+    factors: dict  # Contributing factors breakdown
+    expected_return: float  # Expected return percentage
+    max_drawdown: float  # Expected max drawdown percentage
 
 
 @dataclass(frozen=True)
@@ -16,12 +27,24 @@ class SignalAnalysis:
     symbol: str
     address: str
     price_usd: float
+
+    # Core scores
     total_score: int
     liquidity_score: int
     volume_ratio_score: int
     momentum_score: int
     buy_pressure_score: int
     trend_score: int
+
+    # Security scores
+    security_score: int
+    lock_score: int
+    bundle_penalty: int
+
+    # PoP analysis
+    pop: PoPAnalysis
+
+    # Trade setup
     entry_price: float
     stop_loss: float
     take_profit_1: float
@@ -30,13 +53,21 @@ class SignalAnalysis:
     risk_reward_ratio: float
     signal_strength: str
 
+    # Security details
+    is_locked: bool
+    lock_percentage: float
+    is_bundled: bool
+    bundle_percentage: float
+    risk_level: str
+    security_warnings: list[str]
+
     @property
     def is_valid_signal(self) -> bool:
-        return self.total_score >= 70
+        return self.total_score >= 70 and self.pop.pop_score >= 50
 
 
 class SignalAnalyzer:
-    """Analyzes token data and generates trading signals."""
+    """Analyzes token data and generates trading signals with security analysis."""
 
     # Thresholds for scoring
     MIN_LIQUIDITY_USD = 50_000
@@ -44,13 +75,27 @@ class SignalAnalyzer:
     IDEAL_VOLUME_RATIO = 0.5
     MAX_VOLUME_RATIO = 2.0
 
+    # PoP model weights (based on historical patterns)
+    POP_WEIGHTS = {
+        "momentum": 0.20,
+        "volume": 0.15,
+        "buy_pressure": 0.20,
+        "liquidity": 0.10,
+        "security": 0.25,
+        "trend": 0.10,
+    }
+
     def __init__(self, weights: Optional[ScoringWeights] = None) -> None:
         self._weights = weights or ScoringWeights()
 
-    def analyze(self, token_data: TokenData) -> SignalAnalysis:
-        """Analyze token data and generate signal with scores."""
+    def analyze(
+        self,
+        token_data: TokenData,
+        security_report: Optional[SecurityReport] = None
+    ) -> SignalAnalysis:
+        """Analyze token data with security integration and PoP calculation."""
 
-        # Calculate individual scores
+        # Calculate technical scores
         liquidity_score = self._score_liquidity(token_data.liquidity_usd)
         volume_ratio_score = self._score_volume_ratio(
             token_data.volume_24h,
@@ -60,7 +105,12 @@ class SignalAnalyzer:
         buy_pressure_score = self._score_buy_pressure(token_data)
         trend_score = self._score_trend(token_data)
 
-        total_score = (
+        # Calculate security scores
+        security_score, lock_score, bundle_penalty, security_warnings = \
+            self._score_security(security_report)
+
+        # Total technical score (before security adjustments)
+        base_score = (
             liquidity_score +
             volume_ratio_score +
             momentum_score +
@@ -68,19 +118,43 @@ class SignalAnalyzer:
             trend_score
         )
 
-        # Calculate entry/exit points
-        entry_price = token_data.price_usd
-        stop_loss = entry_price * 0.92  # 8% stop loss
-        take_profit_1 = entry_price * 1.15  # 15% TP1
-        take_profit_2 = entry_price * 1.30  # 30% TP2
-        take_profit_3 = entry_price * 1.50  # 50% TP3
+        # Apply security adjustments
+        total_score = max(0, base_score + security_score - bundle_penalty)
 
-        # Risk/reward ratio (using TP2 as target)
+        # Calculate PoP
+        pop = self._calculate_pop(
+            token_data,
+            security_report,
+            liquidity_score,
+            volume_ratio_score,
+            momentum_score,
+            buy_pressure_score,
+            trend_score,
+            bundle_penalty
+        )
+
+        # Calculate entry/exit points (adjusted for risk)
+        entry_price = token_data.price_usd
+        risk_multiplier = self._get_risk_multiplier(security_report)
+
+        stop_loss = entry_price * (1 - 0.08 * risk_multiplier)
+        take_profit_1 = entry_price * (1 + 0.15 / risk_multiplier)
+        take_profit_2 = entry_price * (1 + 0.30 / risk_multiplier)
+        take_profit_3 = entry_price * (1 + 0.50 / risk_multiplier)
+
+        # Risk/reward ratio
         risk = entry_price - stop_loss
         reward = take_profit_2 - entry_price
         risk_reward = reward / risk if risk > 0 else 0
 
-        signal_strength = self._get_signal_strength(total_score)
+        signal_strength = self._get_signal_strength(total_score, pop.pop_score)
+
+        # Extract security details
+        is_locked = security_report.liquidity_lock.is_locked if security_report else False
+        lock_pct = security_report.liquidity_lock.lock_percentage if security_report else 0
+        is_bundled = security_report.bundle_analysis.is_bundled if security_report else False
+        bundle_pct = security_report.bundle_analysis.bundle_percentage if security_report else 0
+        risk_level = security_report.risk_level.value if security_report else "UNKNOWN"
 
         return SignalAnalysis(
             symbol=token_data.symbol,
@@ -92,6 +166,10 @@ class SignalAnalyzer:
             momentum_score=momentum_score,
             buy_pressure_score=buy_pressure_score,
             trend_score=trend_score,
+            security_score=security_score,
+            lock_score=lock_score,
+            bundle_penalty=bundle_penalty,
+            pop=pop,
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit_1=take_profit_1,
@@ -99,7 +177,196 @@ class SignalAnalyzer:
             take_profit_3=take_profit_3,
             risk_reward_ratio=round(risk_reward, 2),
             signal_strength=signal_strength,
+            is_locked=is_locked,
+            lock_percentage=lock_pct,
+            is_bundled=is_bundled,
+            bundle_percentage=bundle_pct,
+            risk_level=risk_level,
+            security_warnings=security_warnings,
         )
+
+    def _score_security(
+        self,
+        report: Optional[SecurityReport]
+    ) -> tuple[int, int, int, list[str]]:
+        """Score security factors. Returns (security_score, lock_score, bundle_penalty, warnings)."""
+        warnings = []
+
+        if not report:
+            return 0, 0, 0, ["Security data unavailable"]
+
+        # Lock score (0-10 bonus points)
+        lock_score = 0
+        if report.liquidity_lock.is_locked:
+            if report.liquidity_lock.lock_percentage >= 95:
+                lock_score = 10
+            elif report.liquidity_lock.lock_percentage >= 80:
+                lock_score = 7
+            elif report.liquidity_lock.lock_percentage >= 50:
+                lock_score = 4
+        else:
+            warnings.append("Liquidity NOT locked")
+
+        # Bundle penalty (0-25 points deducted)
+        bundle_penalty = 0
+        bundle = report.bundle_analysis
+
+        if bundle.is_bundled:
+            warnings.append(f"Token bundled ({bundle.bundle_percentage:.1f}% concentrated)")
+            bundle_penalty += 10
+
+        if bundle.deployer_holdings_pct > 20:
+            warnings.append(f"Deployer holds {bundle.deployer_holdings_pct:.1f}%")
+            bundle_penalty += 8
+
+        if bundle.top_10_holders_pct > 60:
+            warnings.append(f"Top 10 hold {bundle.top_10_holders_pct:.1f}%")
+            bundle_penalty += 7
+
+        if bundle.sniper_count > 20:
+            warnings.append(f"High sniper activity ({bundle.sniper_count} wallets)")
+            bundle_penalty += 5
+
+        # Contract risk penalties
+        if report.is_mintable:
+            warnings.append("Mint authority enabled")
+            bundle_penalty += 5
+
+        if report.is_freezable:
+            warnings.append("Freeze authority enabled")
+            bundle_penalty += 5
+
+        if report.is_mutable:
+            warnings.append("Metadata is mutable")
+            bundle_penalty += 2
+
+        # Security score based on RugCheck
+        security_score = lock_score
+        if report.rugcheck_score:
+            # RugCheck: 0-1000, convert to 0-5 bonus
+            security_score += min(5, report.rugcheck_score // 200)
+
+        return security_score, lock_score, bundle_penalty, warnings
+
+    def _calculate_pop(
+        self,
+        token_data: TokenData,
+        security_report: Optional[SecurityReport],
+        liquidity_score: int,
+        volume_ratio_score: int,
+        momentum_score: int,
+        buy_pressure_score: int,
+        trend_score: int,
+        bundle_penalty: int,
+    ) -> PoPAnalysis:
+        """Calculate Probability of Profit using multiple factors."""
+
+        # Normalize scores to 0-1 range
+        momentum_norm = momentum_score / 25
+        volume_norm = volume_ratio_score / 20
+        buy_pressure_norm = buy_pressure_score / 20
+        liquidity_norm = liquidity_score / 20
+        trend_norm = trend_score / 15
+
+        # Security factor (inverted - lower risk = higher PoP)
+        if security_report:
+            security_norm = max(0, 1 - (security_report.risk_score / 100))
+        else:
+            security_norm = 0.5  # Neutral if unknown
+
+        # Bundle penalty reduces PoP significantly
+        bundle_factor = max(0, 1 - (bundle_penalty / 30))
+
+        # Weighted PoP calculation
+        base_pop = (
+            momentum_norm * self.POP_WEIGHTS["momentum"] +
+            volume_norm * self.POP_WEIGHTS["volume"] +
+            buy_pressure_norm * self.POP_WEIGHTS["buy_pressure"] +
+            liquidity_norm * self.POP_WEIGHTS["liquidity"] +
+            security_norm * self.POP_WEIGHTS["security"] +
+            trend_norm * self.POP_WEIGHTS["trend"]
+        )
+
+        # Apply bundle factor
+        adjusted_pop = base_pop * bundle_factor
+
+        # Additional adjustments based on market conditions
+        # Strong momentum + buy pressure = higher PoP
+        if momentum_norm > 0.7 and buy_pressure_norm > 0.7:
+            adjusted_pop *= 1.1
+
+        # Locked + low bundle = higher PoP
+        if security_report and security_report.liquidity_lock.is_locked:
+            if not security_report.bundle_analysis.is_bundled:
+                adjusted_pop *= 1.15
+
+        # Extreme moves reduce PoP (potential reversal)
+        if token_data.price_change_1h > 50:
+            adjusted_pop *= 0.7
+        elif token_data.price_change_1h > 30:
+            adjusted_pop *= 0.85
+
+        # Convert to percentage (0-100)
+        pop_score = min(95, max(5, int(adjusted_pop * 100)))
+
+        # Determine confidence level
+        data_completeness = sum([
+            1 if liquidity_score > 0 else 0,
+            1 if volume_ratio_score > 0 else 0,
+            1 if security_report is not None else 0,
+            1 if token_data.txns_buys_1h + token_data.txns_sells_1h > 50 else 0,
+        ]) / 4
+
+        if data_completeness >= 0.75 and pop_score >= 60:
+            confidence = "HIGH"
+        elif data_completeness >= 0.5:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        # Expected return calculation
+        # Based on PoP and typical outcomes
+        if pop_score >= 70:
+            expected_return = 15 + (pop_score - 70) * 0.5  # 15-27.5%
+            max_drawdown = 8 + (100 - pop_score) * 0.2
+        elif pop_score >= 50:
+            expected_return = 5 + (pop_score - 50) * 0.5  # 5-15%
+            max_drawdown = 12 + (70 - pop_score) * 0.3
+        else:
+            expected_return = -5 + pop_score * 0.2  # -5 to 5%
+            max_drawdown = 15 + (50 - pop_score) * 0.4
+
+        factors = {
+            "momentum": round(momentum_norm * 100),
+            "volume": round(volume_norm * 100),
+            "buy_pressure": round(buy_pressure_norm * 100),
+            "liquidity": round(liquidity_norm * 100),
+            "security": round(security_norm * 100),
+            "trend": round(trend_norm * 100),
+            "bundle_impact": round((1 - bundle_factor) * 100),
+        }
+
+        return PoPAnalysis(
+            pop_score=pop_score,
+            confidence=confidence,
+            factors=factors,
+            expected_return=round(expected_return, 1),
+            max_drawdown=round(max_drawdown, 1),
+        )
+
+    def _get_risk_multiplier(self, report: Optional[SecurityReport]) -> float:
+        """Get risk multiplier for trade sizing based on security."""
+        if not report:
+            return 1.5  # Conservative if unknown
+
+        if report.risk_level == RiskLevel.LOW:
+            return 1.0
+        elif report.risk_level == RiskLevel.MEDIUM:
+            return 1.25
+        elif report.risk_level == RiskLevel.HIGH:
+            return 1.5
+        else:  # CRITICAL
+            return 2.0
 
     def _score_liquidity(self, liquidity_usd: float) -> int:
         """Score liquidity (0-20 points)."""
@@ -111,7 +378,6 @@ class SignalAnalyzer:
         if liquidity_usd >= self.IDEAL_LIQUIDITY_USD:
             return max_points
 
-        # Linear scale between min and ideal
         ratio = (liquidity_usd - self.MIN_LIQUIDITY_USD) / (
             self.IDEAL_LIQUIDITY_USD - self.MIN_LIQUIDITY_USD
         )
@@ -126,39 +392,34 @@ class SignalAnalyzer:
 
         ratio = volume_24h / liquidity
 
-        # Best ratio is around 0.5-1.0 (healthy trading activity)
         if ratio < 0.1:
-            return int(max_points * 0.2)  # Low activity
+            return int(max_points * 0.2)
         elif ratio < self.IDEAL_VOLUME_RATIO:
             return int(max_points * (0.2 + 0.8 * (ratio / self.IDEAL_VOLUME_RATIO)))
         elif ratio <= 1.0:
-            return max_points  # Ideal range
+            return max_points
         elif ratio <= self.MAX_VOLUME_RATIO:
-            # Slightly penalize very high ratios (potential manipulation)
             return int(max_points * 0.8)
         else:
-            return int(max_points * 0.5)  # Very high ratio - caution
+            return int(max_points * 0.5)
 
     def _score_momentum(self, data: TokenData) -> int:
         """Score price momentum (0-25 points)."""
         max_points = self._weights.price_momentum
         score = 0
 
-        # Short-term momentum (5m, 1h) - more weight
         if data.price_change_5m > 0:
-            score += min(5, data.price_change_5m / 2)  # Up to 5 points
+            score += min(5, data.price_change_5m / 2)
 
         if data.price_change_1h > 0:
-            score += min(8, data.price_change_1h / 1.5)  # Up to 8 points
+            score += min(8, data.price_change_1h / 1.5)
 
-        # Medium-term trend (6h, 24h)
         if data.price_change_6h > 0:
-            score += min(6, data.price_change_6h / 2)  # Up to 6 points
+            score += min(6, data.price_change_6h / 2)
 
         if data.price_change_24h > 0:
-            score += min(6, data.price_change_24h / 3)  # Up to 6 points
+            score += min(6, data.price_change_24h / 3)
 
-        # Penalize extreme moves (potential pump and dump)
         if data.price_change_1h > 50:
             score *= 0.5
 
@@ -168,7 +429,6 @@ class SignalAnalyzer:
         """Score buy pressure from transaction ratios (0-20 points)."""
         max_points = self._weights.buy_pressure
 
-        # Calculate buy ratios for different timeframes
         def buy_ratio(buys: int, sells: int) -> float:
             total = buys + sells
             return buys / total if total > 0 else 0.5
@@ -177,10 +437,8 @@ class SignalAnalyzer:
         ratio_1h = buy_ratio(data.txns_buys_1h, data.txns_sells_1h)
         ratio_24h = buy_ratio(data.txns_buys_24h, data.txns_sells_24h)
 
-        # Weight recent activity more heavily
         weighted_ratio = (ratio_5m * 0.4) + (ratio_1h * 0.35) + (ratio_24h * 0.25)
 
-        # Score: 50% ratio = 0 points, 70%+ ratio = max points
         if weighted_ratio <= 0.5:
             return 0
         elif weighted_ratio >= 0.7:
@@ -193,7 +451,6 @@ class SignalAnalyzer:
         max_points = self._weights.trend_strength
         score = 0
 
-        # Check for consistent uptrend across timeframes
         timeframes = [
             data.price_change_5m,
             data.price_change_1h,
@@ -203,38 +460,37 @@ class SignalAnalyzer:
 
         positive_count = sum(1 for t in timeframes if t > 0)
 
-        # Bonus for consistency
         if positive_count == 4:
-            score += 8  # All timeframes positive
+            score += 8
         elif positive_count == 3:
             score += 5
         elif positive_count == 2:
             score += 2
 
-        # Volume trend (increasing volume is bullish)
         if data.volume_1h > 0 and data.volume_24h > 0:
             hourly_avg_24h = data.volume_24h / 24
             if data.volume_1h > hourly_avg_24h * 1.5:
-                score += 4  # Volume surge
+                score += 4
             elif data.volume_1h > hourly_avg_24h:
                 score += 2
 
-        # Transaction activity trend
         total_txns_1h = data.txns_buys_1h + data.txns_sells_1h
         if total_txns_1h > 100:
-            score += 3  # Active trading
+            score += 3
         elif total_txns_1h > 50:
             score += 1
 
         return min(max_points, score)
 
-    def _get_signal_strength(self, score: int) -> str:
-        """Get signal strength description based on score."""
-        if score >= 85:
+    def _get_signal_strength(self, score: int, pop_score: int) -> str:
+        """Get signal strength based on score and PoP."""
+        combined = (score + pop_score) / 2
+
+        if combined >= 80 and pop_score >= 65:
             return "STRONG"
-        elif score >= 70:
+        elif combined >= 65 and pop_score >= 50:
             return "MODERATE"
-        elif score >= 50:
+        elif combined >= 50:
             return "WEAK"
         else:
             return "NO SIGNAL"
