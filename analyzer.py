@@ -8,6 +8,7 @@ from config import ScoringWeights
 from fetcher import TokenData
 from security_checker import SecurityReport, RiskLevel
 from smart_money import SmartMoneyReport
+from technical import TechnicalIndicators, MarketContext
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,22 @@ class SignalAnalysis:
     influencer_mentions: int
     galaxy_score: int
 
+    # Technical indicators
+    technical_score: int
+    rsi_14: float
+    rsi_signal: str  # OVERSOLD, OVERBOUGHT, NEUTRAL
+    vwap_deviation: float
+    price_vs_vwap: str  # ABOVE, BELOW, NEUTRAL
+    consolidation_break: bool
+    technical_patterns: list[str]
+
+    # Market context
+    market_context_score: int
+    btc_trend_bullish: bool
+    fear_greed_index: int
+    fear_greed_label: str
+    market_favorable: bool
+
     # PoP analysis
     pop: PoPAnalysis
 
@@ -92,15 +109,22 @@ class SignalAnalyzer:
     IDEAL_VOLUME_RATIO = 0.5
     MAX_VOLUME_RATIO = 2.0
 
-    # PoP model weights (based on historical patterns)
+    # Signal Fusion Engine weights
+    # PoP = (OnChain × 0.35) + (Social × 0.25) + (Technical × 0.25) + (Security × 0.15)
     POP_WEIGHTS = {
-        "momentum": 0.15,
-        "volume": 0.10,
-        "buy_pressure": 0.15,
+        # On-Chain factors (35% total)
         "liquidity": 0.10,
-        "security": 0.20,
-        "trend": 0.10,
-        "smart_money": 0.20,  # New: smart money signals
+        "volume": 0.10,
+        "buy_pressure": 0.10,
+        "smart_money": 0.05,
+        # Social factors (25% total)
+        "social": 0.25,
+        # Technical factors (25% total)
+        "technical": 0.15,
+        "momentum": 0.05,
+        "trend": 0.05,
+        # Security factors (15% total)
+        "security": 0.15,
     }
 
     def __init__(self, weights: Optional[ScoringWeights] = None) -> None:
@@ -110,9 +134,11 @@ class SignalAnalyzer:
         self,
         token_data: TokenData,
         security_report: Optional[SecurityReport] = None,
-        smart_money_report: Optional[SmartMoneyReport] = None
+        smart_money_report: Optional[SmartMoneyReport] = None,
+        technical_indicators: Optional[TechnicalIndicators] = None,
+        market_context: Optional[MarketContext] = None,
     ) -> SignalAnalysis:
-        """Analyze token data with security, smart money integration, and PoP calculation."""
+        """Analyze token data with security, smart money, technical indicators, and PoP calculation."""
 
         # Calculate technical scores
         liquidity_score = self._score_liquidity(token_data.liquidity_usd)
@@ -131,6 +157,14 @@ class SignalAnalyzer:
         # Calculate smart money scores
         sm_score, sm_signal, sm_confidence, sm_bonus = self._score_smart_money(smart_money_report)
 
+        # Extract technical indicator scores
+        tech_score = technical_indicators.technical_score if technical_indicators else 50
+        tech_bonus = max(0, (tech_score - 50) // 5)  # 0-10 bonus points
+
+        # Extract market context scores
+        market_score = market_context.context_score if market_context else 50
+        market_bonus = 5 if market_context and market_context.market_favorable else -5
+
         # Total technical score (before security adjustments)
         base_score = (
             liquidity_score +
@@ -140,20 +174,24 @@ class SignalAnalyzer:
             trend_score
         )
 
-        # Apply security and smart money adjustments
-        total_score = max(0, min(100, base_score + security_score - bundle_penalty + sm_bonus))
+        # Apply security, smart money, technical, and market adjustments
+        total_score = max(0, min(100,
+            base_score + security_score - bundle_penalty + sm_bonus + tech_bonus + market_bonus
+        ))
 
-        # Calculate PoP
+        # Calculate PoP with Signal Fusion Engine
         pop = self._calculate_pop(
             token_data,
             security_report,
             smart_money_report,
+            technical_indicators,
+            market_context,
             liquidity_score,
             volume_ratio_score,
             momentum_score,
             buy_pressure_score,
             trend_score,
-            bundle_penalty
+            bundle_penalty,
         )
 
         # Extract smart money details
@@ -217,6 +255,18 @@ class SignalAnalyzer:
             social_mentions_change=social_mentions_change,
             influencer_mentions=influencer_mentions,
             galaxy_score=galaxy_score,
+            technical_score=tech_score,
+            rsi_14=technical_indicators.rsi_14 if technical_indicators else 50.0,
+            rsi_signal=technical_indicators.rsi_signal if technical_indicators else "NEUTRAL",
+            vwap_deviation=technical_indicators.vwap_deviation if technical_indicators else 0.0,
+            price_vs_vwap=technical_indicators.price_vs_vwap if technical_indicators else "NEUTRAL",
+            consolidation_break=technical_indicators.consolidation_break if technical_indicators else False,
+            technical_patterns=technical_indicators.patterns if technical_indicators else [],
+            market_context_score=market_score,
+            btc_trend_bullish=market_context.btc_above_ema20 if market_context else False,
+            fear_greed_index=market_context.fear_greed_index if market_context else 50,
+            fear_greed_label=market_context.fear_greed_label if market_context else "Neutral",
+            market_favorable=market_context.market_favorable if market_context else True,
             pop=pop,
             entry_price=entry_price,
             stop_loss=stop_loss,
@@ -346,6 +396,8 @@ class SignalAnalyzer:
         token_data: TokenData,
         security_report: Optional[SecurityReport],
         smart_money_report: Optional[SmartMoneyReport],
+        technical_indicators: Optional[TechnicalIndicators],
+        market_context: Optional[MarketContext],
         liquidity_score: int,
         volume_ratio_score: int,
         momentum_score: int,
@@ -353,50 +405,100 @@ class SignalAnalyzer:
         trend_score: int,
         bundle_penalty: int,
     ) -> PoPAnalysis:
-        """Calculate Probability of Profit using multiple factors."""
+        """Calculate Probability of Profit using Signal Fusion Engine.
 
-        # Normalize scores to 0-1 range
-        momentum_norm = momentum_score / 25
+        PoP = (OnChain × 0.35) + (Social × 0.25) + (Technical × 0.25) + (Security × 0.15)
+        """
+
+        # === ON-CHAIN SCORE (35%) ===
+        # Normalize on-chain scores to 0-1 range
+        liquidity_norm = liquidity_score / 20
         volume_norm = volume_ratio_score / 20
         buy_pressure_norm = buy_pressure_score / 20
-        liquidity_norm = liquidity_score / 20
-        trend_norm = trend_score / 15
-
-        # Security factor (inverted - lower risk = higher PoP)
-        if security_report:
-            security_norm = max(0, 1 - (security_report.risk_score / 100))
-        else:
-            security_norm = 0.5  # Neutral if unknown
 
         # Smart money factor (0-100 score normalized to 0-1)
         if smart_money_report:
             smart_money_norm = smart_money_report.smart_money_score / 100
-            # Boost for accumulation, reduce for distribution
             if smart_money_report.signal == "ACCUMULATION":
                 smart_money_norm = min(1.0, smart_money_norm * 1.2)
             elif smart_money_report.signal == "DISTRIBUTION":
                 smart_money_norm = max(0, smart_money_norm * 0.8)
         else:
-            smart_money_norm = 0.5  # Neutral if unknown
+            smart_money_norm = 0.5
 
-        # Bundle penalty reduces PoP significantly
-        bundle_factor = max(0, 1 - (bundle_penalty / 30))
-
-        # Weighted PoP calculation
-        base_pop = (
-            momentum_norm * self.POP_WEIGHTS["momentum"] +
+        onchain_score = (
+            liquidity_norm * self.POP_WEIGHTS["liquidity"] +
             volume_norm * self.POP_WEIGHTS["volume"] +
             buy_pressure_norm * self.POP_WEIGHTS["buy_pressure"] +
-            liquidity_norm * self.POP_WEIGHTS["liquidity"] +
-            security_norm * self.POP_WEIGHTS["security"] +
-            trend_norm * self.POP_WEIGHTS["trend"] +
             smart_money_norm * self.POP_WEIGHTS["smart_money"]
-        )
+        ) / 0.35  # Normalize to 0-1
 
-        # Apply bundle factor
-        adjusted_pop = base_pop * bundle_factor
+        # === SOCIAL SCORE (25%) ===
+        if smart_money_report and smart_money_report.social_sentiment:
+            social_norm = smart_money_report.social_sentiment.social_score / 100
+            # Boost for bullish sentiment
+            if smart_money_report.social_sentiment.sentiment == "BULLISH":
+                social_norm = min(1.0, social_norm * 1.15)
+            elif smart_money_report.social_sentiment.sentiment == "BEARISH":
+                social_norm = max(0, social_norm * 0.85)
+        else:
+            social_norm = 0.5
+
+        # === TECHNICAL SCORE (25%) ===
+        momentum_norm = momentum_score / 25
+        trend_norm = trend_score / 15
+
+        if technical_indicators:
+            technical_norm = technical_indicators.technical_score / 100
+            # Boost for consolidation breakout
+            if technical_indicators.consolidation_break:
+                technical_norm = min(1.0, technical_norm * 1.2)
+            # RSI oversold is bullish opportunity
+            if technical_indicators.rsi_signal == "OVERSOLD":
+                technical_norm = min(1.0, technical_norm * 1.1)
+        else:
+            technical_norm = 0.5
+
+        tech_score = (
+            technical_norm * self.POP_WEIGHTS["technical"] +
+            momentum_norm * self.POP_WEIGHTS["momentum"] +
+            trend_norm * self.POP_WEIGHTS["trend"]
+        ) / 0.25  # Normalize to 0-1
+
+        # === SECURITY SCORE (15%) ===
+        if security_report:
+            security_norm = max(0, 1 - (security_report.risk_score / 100))
+        else:
+            security_norm = 0.5
+
+        # Bundle penalty reduces security score
+        bundle_factor = max(0, 1 - (bundle_penalty / 30))
+        security_norm *= bundle_factor
+
+        # === MARKET CONTEXT ADJUSTMENT ===
+        market_multiplier = 1.0
+        if market_context:
+            if market_context.market_favorable:
+                market_multiplier = 1.1
+            else:
+                market_multiplier = 0.85
+            # Fear & Greed adjustment
+            if market_context.fear_greed_index < 25:
+                market_multiplier *= 0.9  # Extreme fear - cautious
+            elif market_context.fear_greed_index > 75:
+                market_multiplier *= 0.95  # Extreme greed - potential top
+
+        # === SIGNAL FUSION ENGINE CALCULATION ===
+        base_pop = (
+            onchain_score * 0.35 +
+            social_norm * 0.25 +
+            tech_score * 0.25 +
+            security_norm * 0.15
+        ) * market_multiplier
 
         # Additional adjustments based on market conditions
+        adjusted_pop = base_pop
+
         # Strong momentum + buy pressure = higher PoP
         if momentum_norm > 0.7 and buy_pressure_norm > 0.7:
             adjusted_pop *= 1.1
@@ -415,14 +517,16 @@ class SignalAnalyzer:
         # Convert to percentage (0-100)
         pop_score = min(95, max(5, int(adjusted_pop * 100)))
 
-        # Determine confidence level
+        # Determine confidence level based on data completeness
         data_completeness = sum([
             1 if liquidity_score > 0 else 0,
             1 if volume_ratio_score > 0 else 0,
             1 if security_report is not None else 0,
             1 if smart_money_report is not None else 0,
+            1 if technical_indicators is not None else 0,
+            1 if market_context is not None else 0,
             1 if token_data.txns_buys_1h + token_data.txns_sells_1h > 50 else 0,
-        ]) / 5
+        ]) / 7
 
         if data_completeness >= 0.75 and pop_score >= 60:
             confidence = "HIGH"
@@ -432,26 +536,29 @@ class SignalAnalyzer:
             confidence = "LOW"
 
         # Expected return calculation
-        # Based on PoP and typical outcomes
         if pop_score >= 70:
-            expected_return = 15 + (pop_score - 70) * 0.5  # 15-27.5%
+            expected_return = 15 + (pop_score - 70) * 0.5
             max_drawdown = 8 + (100 - pop_score) * 0.2
         elif pop_score >= 50:
-            expected_return = 5 + (pop_score - 50) * 0.5  # 5-15%
+            expected_return = 5 + (pop_score - 50) * 0.5
             max_drawdown = 12 + (70 - pop_score) * 0.3
         else:
-            expected_return = -5 + pop_score * 0.2  # -5 to 5%
+            expected_return = -5 + pop_score * 0.2
             max_drawdown = 15 + (50 - pop_score) * 0.4
 
+        # Signal Fusion Engine factor breakdown
         factors = {
+            # Component scores (0-100)
+            "onchain_score": round(onchain_score * 100),
+            "social_score": round(social_norm * 100),
+            "technical_score": round(tech_score * 100),
+            "security_score": round(security_norm * 100),
+            # Sub-factors
             "momentum": round(momentum_norm * 100),
-            "volume": round(volume_norm * 100),
             "buy_pressure": round(buy_pressure_norm * 100),
-            "liquidity": round(liquidity_norm * 100),
-            "security": round(security_norm * 100),
-            "trend": round(trend_norm * 100),
             "smart_money": round(smart_money_norm * 100),
             "bundle_impact": round((1 - bundle_factor) * 100),
+            "market_context": round((market_multiplier - 1) * 100),
         }
 
         return PoPAnalysis(

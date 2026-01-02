@@ -17,6 +17,7 @@ from notifier import TelegramNotifier
 from security_checker import SecurityChecker
 from signal_store import RedisSignalStore
 from smart_money import SmartMoneyTracker
+from technical import TechnicalAnalyzer, MarketContextAnalyzer, MarketContext
 
 # Configure logging
 logging.basicConfig(
@@ -76,6 +77,17 @@ class SignalStore:
             "momentum_score": signal.momentum_score,
             "buy_pressure_score": signal.buy_pressure_score,
             "trend_score": signal.trend_score,
+            "technical_score": signal.technical_score,
+            "rsi_14": signal.rsi_14,
+            "rsi_signal": signal.rsi_signal,
+            "vwap_deviation": signal.vwap_deviation,
+            "price_vs_vwap": signal.price_vs_vwap,
+            "consolidation_break": signal.consolidation_break,
+            "market_context_score": signal.market_context_score,
+            "btc_trend_bullish": signal.btc_trend_bullish,
+            "fear_greed_index": signal.fear_greed_index,
+            "fear_greed_label": signal.fear_greed_label,
+            "market_favorable": signal.market_favorable,
             "entry_price": signal.entry_price,
             "stop_loss": signal.stop_loss,
             "take_profit_1": signal.take_profit_1,
@@ -118,6 +130,8 @@ class CryptoSignalBot:
         self._analyzer = SignalAnalyzer(config.scoring_weights)
         self._security_checker = SecurityChecker(config.request_timeout)
         self._smart_money_tracker = SmartMoneyTracker()
+        self._technical_analyzer = TechnicalAnalyzer(config.request_timeout)
+        self._market_context_analyzer = MarketContextAnalyzer(config.request_timeout)
         self._notifier = TelegramNotifier(config)
         self._signal_store = signal_store
         self._redis_store = redis_store
@@ -126,6 +140,8 @@ class CryptoSignalBot:
         self._signals_sent = 0
         self._last_scan: datetime | None = None
         self._errors_count = 0
+        self._cached_market_context: MarketContext | None = None
+        self._market_context_updated: datetime | None = None
 
     @property
     def status(self) -> dict:
@@ -179,6 +195,20 @@ class CryptoSignalBot:
 
     async def _scan_watchlist(self) -> None:
         """Scan all tokens in watchlist."""
+        # Update market context every 5 minutes
+        now = datetime.now()
+        if (
+            self._cached_market_context is None
+            or self._market_context_updated is None
+            or (now - self._market_context_updated).seconds > 300
+        ):
+            self._cached_market_context = await self._market_context_analyzer.analyze()
+            self._market_context_updated = now
+            logger.debug(
+                f"Market context updated: BTC {'above' if self._cached_market_context.btc_above_ema20 else 'below'} EMA20, "
+                f"Fear & Greed: {self._cached_market_context.fear_greed_index} ({self._cached_market_context.fear_greed_label})"
+            )
+
         for symbol, token_config in WATCHLIST.items():
             try:
                 # Fetch token data
@@ -198,9 +228,21 @@ class CryptoSignalBot:
                     token_config.address, symbol=symbol
                 )
 
-                # Analyze signal with security and smart money data
+                # Calculate technical indicators from token data
+                # Use available price change data to approximate price history
+                prices = self._approximate_price_history(token_data)
+                volumes = self._approximate_volume_history(token_data)
+                technical_indicators = self._technical_analyzer.analyze(
+                    prices, volumes, token_data.price_usd
+                )
+
+                # Analyze signal with all data sources
                 signal_result = self._analyzer.analyze(
-                    token_data, security_report, smart_money_report
+                    token_data,
+                    security_report,
+                    smart_money_report,
+                    technical_indicators,
+                    self._cached_market_context,
                 )
 
                 # Store scan result (local + Redis)
@@ -230,6 +272,76 @@ class CryptoSignalBot:
 
         # Update status in Redis after each full scan
         await self._redis_store.update_status(self.status)
+
+    def _approximate_price_history(self, token_data) -> list[float]:
+        """Approximate price history from available change data.
+
+        Uses price changes at different timeframes to reconstruct
+        approximate historical prices for RSI/VWAP calculation.
+        """
+        current_price = token_data.price_usd
+        if current_price <= 0:
+            return []
+
+        # Work backwards from current price using change percentages
+        # This gives us approximate prices at different points in time
+        prices = []
+
+        # 24h ago
+        if token_data.price_change_24h != 0:
+            price_24h_ago = current_price / (1 + token_data.price_change_24h / 100)
+            prices.append(price_24h_ago)
+
+        # 6h ago
+        if token_data.price_change_6h != 0:
+            price_6h_ago = current_price / (1 + token_data.price_change_6h / 100)
+            prices.append(price_6h_ago)
+
+        # 1h ago
+        if token_data.price_change_1h != 0:
+            price_1h_ago = current_price / (1 + token_data.price_change_1h / 100)
+            prices.append(price_1h_ago)
+
+        # 5m ago
+        if token_data.price_change_5m != 0:
+            price_5m_ago = current_price / (1 + token_data.price_change_5m / 100)
+            prices.append(price_5m_ago)
+
+        # Current price
+        prices.append(current_price)
+
+        # Interpolate to get ~20 data points for RSI calculation
+        if len(prices) >= 2:
+            interpolated = []
+            for i in range(len(prices) - 1):
+                start, end = prices[i], prices[i + 1]
+                steps = 5
+                for j in range(steps):
+                    interpolated.append(start + (end - start) * (j / steps))
+            interpolated.append(prices[-1])
+            return interpolated
+
+        return prices if prices else [current_price] * 20
+
+    def _approximate_volume_history(self, token_data) -> list[float]:
+        """Approximate volume history from available data."""
+        # Use 24h volume divided by periods
+        if token_data.volume_24h <= 0:
+            return []
+
+        hourly_avg = token_data.volume_24h / 24
+        current_hour_vol = token_data.volume_1h if token_data.volume_1h > 0 else hourly_avg
+
+        # Create approximate volume distribution
+        # Assume recent volume is more representative
+        volumes = []
+        for i in range(20):
+            # Gradual transition from average to current
+            weight = i / 19
+            vol = hourly_avg * (1 - weight) + current_hour_vol * weight
+            volumes.append(vol)
+
+        return volumes
 
 
 @asynccontextmanager

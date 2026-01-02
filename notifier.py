@@ -136,12 +136,12 @@ class TelegramNotifier:
 <b>Expected Return:</b> {signal.pop.expected_return:+.1f}%
 <b>Max Drawdown:</b> -{signal.pop.max_drawdown:.1f}%
 
-<b>PoP Factors:</b>
-• Momentum: {signal.pop.factors.get('momentum', 0)}%
-• Buy Pressure: {signal.pop.factors.get('buy_pressure', 0)}%
-• Smart Money: {signal.pop.factors.get('smart_money', 0)}%
-• Security: {signal.pop.factors.get('security', 0)}%
-• Bundle Impact: -{signal.pop.factors.get('bundle_impact', 0)}%
+<b>Signal Fusion:</b>
+• On-Chain: {signal.pop.factors.get('onchain_score', 0)}%
+• Social: {signal.pop.factors.get('social_score', 0)}%
+• Technical: {signal.pop.factors.get('technical_score', 0)}%
+• Security: {signal.pop.factors.get('security_score', 0)}%
+• Market Adj: {signal.pop.factors.get('market_context', 0):+}%
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -158,6 +158,21 @@ class TelegramNotifier:
 <b>Social Score:</b> {signal.social_score}/100 | Galaxy: {signal.galaxy_score}
 <b>Mentions 24h:</b> {signal.social_mentions_24h:,} ({signal.social_mentions_change:+.1f}%)
 <b>CT Influencers:</b> {signal.influencer_mentions} mentions
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>📈 TECHNICAL INDICATORS</b>
+<b>RSI(14):</b> {signal.rsi_14:.1f} {self._get_rsi_emoji(signal.rsi_signal)}
+<b>VWAP:</b> {signal.price_vs_vwap} ({signal.vwap_deviation:+.1f}%)
+<b>Breakout:</b> {"🚀 CONSOLIDATION BREAK" if signal.consolidation_break else "No breakout"}
+<b>Tech Score:</b> {signal.technical_score}/100
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>🌍 MARKET CONTEXT</b>
+<b>BTC Trend:</b> {"🟢 Above EMA20" if signal.btc_trend_bullish else "🔴 Below EMA20"}
+<b>Fear & Greed:</b> {signal.fear_greed_index} ({signal.fear_greed_label})
+<b>Market:</b> {"✅ FAVORABLE" if signal.market_favorable else "⚠️ CAUTION"}
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -220,6 +235,14 @@ class TelegramNotifier:
             "BEARISH": "🔴",
             "NEUTRAL": "⚪",
         }.get(sentiment, "⚪")
+
+    def _get_rsi_emoji(self, rsi_signal: str) -> str:
+        """Get emoji for RSI signal."""
+        return {
+            "OVERSOLD": "🟢 OVERSOLD",
+            "OVERBOUGHT": "🔴 OVERBOUGHT",
+            "NEUTRAL": "⚪ NEUTRAL",
+        }.get(rsi_signal, "⚪ NEUTRAL")
 
     async def send_startup_message(self) -> bool:
         """Send bot startup notification."""
