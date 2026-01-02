@@ -50,6 +50,14 @@ class SignalAnalysis:
     top_traders_buying: int
     top_traders_selling: int
 
+    # Social sentiment scores
+    social_score: int
+    social_sentiment: str  # BULLISH, BEARISH, NEUTRAL
+    social_mentions_24h: int
+    social_mentions_change: float
+    influencer_mentions: int
+    galaxy_score: int
+
     # PoP analysis
     pop: PoPAnalysis
 
@@ -153,6 +161,14 @@ class SignalAnalyzer:
         top_traders_buying = smart_money_report.trader_signals.top_traders_buying if smart_money_report else 0
         top_traders_selling = smart_money_report.trader_signals.top_traders_selling if smart_money_report else 0
 
+        # Extract social sentiment details
+        social_score = smart_money_report.social_sentiment.social_score if smart_money_report else 50
+        social_sentiment = smart_money_report.social_sentiment.sentiment if smart_money_report else "NEUTRAL"
+        social_mentions_24h = smart_money_report.social_sentiment.mentions_24h if smart_money_report else 0
+        social_mentions_change = smart_money_report.social_sentiment.mentions_change_pct if smart_money_report else 0
+        influencer_mentions = smart_money_report.social_sentiment.influencer_mentions if smart_money_report else 0
+        galaxy_score = smart_money_report.social_sentiment.galaxy_score if smart_money_report else 0
+
         # Calculate entry/exit points (adjusted for risk)
         entry_price = token_data.price_usd
         risk_multiplier = self._get_risk_multiplier(security_report)
@@ -195,6 +211,12 @@ class SignalAnalyzer:
             whale_net_flow=whale_net_flow,
             top_traders_buying=top_traders_buying,
             top_traders_selling=top_traders_selling,
+            social_score=social_score,
+            social_sentiment=social_sentiment,
+            social_mentions_24h=social_mentions_24h,
+            social_mentions_change=social_mentions_change,
+            influencer_mentions=influencer_mentions,
+            galaxy_score=galaxy_score,
             pop=pop,
             entry_price=entry_price,
             stop_loss=stop_loss,

@@ -153,6 +153,14 @@ class TelegramNotifier:
 
 ━━━━━━━━━━━━━━━━━━━━
 
+<b>📱 SOCIAL SENTIMENT</b>
+<b>Sentiment:</b> {self._get_sentiment_emoji(signal.social_sentiment)} {signal.social_sentiment}
+<b>Social Score:</b> {signal.social_score}/100 | Galaxy: {signal.galaxy_score}
+<b>Mentions 24h:</b> {signal.social_mentions_24h:,} ({signal.social_mentions_change:+.1f}%)
+<b>CT Influencers:</b> {signal.influencer_mentions} mentions
+
+━━━━━━━━━━━━━━━━━━━━
+
 <b>🔐 SECURITY ANALYSIS</b>
 <b>Risk Level:</b> {risk_emoji} {signal.risk_level}
 <b>Liquidity:</b> {lock_status}
@@ -204,6 +212,14 @@ class TelegramNotifier:
             return f"{price:.6f}"
         else:
             return f"{price:.10f}"
+
+    def _get_sentiment_emoji(self, sentiment: str) -> str:
+        """Get emoji for social sentiment."""
+        return {
+            "BULLISH": "🟢",
+            "BEARISH": "🔴",
+            "NEUTRAL": "⚪",
+        }.get(sentiment, "⚪")
 
     async def send_startup_message(self) -> bool:
         """Send bot startup notification."""

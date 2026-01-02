@@ -65,6 +65,12 @@ class SignalStore:
             "whale_net_flow": signal.whale_net_flow,
             "top_traders_buying": signal.top_traders_buying,
             "top_traders_selling": signal.top_traders_selling,
+            "social_score": signal.social_score,
+            "social_sentiment": signal.social_sentiment,
+            "social_mentions_24h": signal.social_mentions_24h,
+            "social_mentions_change": signal.social_mentions_change,
+            "influencer_mentions": signal.influencer_mentions,
+            "galaxy_score": signal.galaxy_score,
             "liquidity_score": signal.liquidity_score,
             "volume_ratio_score": signal.volume_ratio_score,
             "momentum_score": signal.momentum_score,
@@ -187,9 +193,9 @@ class CryptoSignalBot:
                     token_config.address
                 )
 
-                # Fetch smart money data
+                # Fetch smart money data (pass symbol for social APIs)
                 smart_money_report = await self._smart_money_tracker.analyze(
-                    token_config.address
+                    token_config.address, symbol=symbol
                 )
 
                 # Analyze signal with security and smart money data

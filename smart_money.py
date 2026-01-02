@@ -1,4 +1,4 @@
-"""Smart money tracking using Birdeye, Solscan, and Arkham APIs."""
+"""Smart money tracking using Birdeye, Solscan, Arkham, LunarCrush, and TweetScout APIs."""
 
 import logging
 import os
@@ -9,6 +9,17 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+# Token symbol to LunarCrush ID mapping (Solana memecoins)
+LUNARCRUSH_SYMBOLS = {
+    "BONK": "bonk",
+    "WIF": "dogwifhat",
+    "JUP": "jupiter",
+    "POPCAT": "popcat",
+    "MEW": "cat-in-a-dogs-world",
+    "BOME": "book-of-meme",
+}
 
 
 @dataclass(frozen=True)
@@ -43,12 +54,26 @@ class TopTraderSignal:
 
 
 @dataclass(frozen=True)
+class SocialSentiment:
+    """Social media sentiment analysis."""
+    social_score: int  # 0-100 overall social score
+    mentions_24h: int  # Social mentions in 24h
+    mentions_change_pct: float  # Change in mentions vs previous 24h
+    sentiment: str  # BULLISH, BEARISH, NEUTRAL
+    sentiment_score: float  # -1 to 1 sentiment
+    influencer_mentions: int  # CT influencer mentions
+    trending_rank: int  # 0 if not trending, else rank
+    galaxy_score: int  # LunarCrush galaxy score (0-100)
+
+
+@dataclass(frozen=True)
 class SmartMoneyReport:
     """Combined smart money analysis."""
     token_address: str
     whale_activity: WhaleActivity
     holder_analysis: HolderAnalysis
     trader_signals: TopTraderSignal
+    social_sentiment: SocialSentiment
     smart_money_score: int  # 0-100
     signal: str  # ACCUMULATION, DISTRIBUTION, NEUTRAL
     confidence: str  # HIGH, MEDIUM, LOW
@@ -236,6 +261,133 @@ class ArkhamClient:
         return results
 
 
+class LunarCrushClient:
+    """LunarCrush API client for social sentiment data."""
+
+    BASE_URL = "https://lunarcrush.com/api4/public"
+
+    def __init__(self, api_key: Optional[str] = None) -> None:
+        self._api_key = api_key or os.environ.get("LUNARCRUSH_API_KEY", "")
+        self._headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+
+    async def get_coin_metrics(self, symbol: str) -> dict:
+        """Get social metrics for a coin by symbol."""
+        # Map symbol to LunarCrush slug
+        slug = LUNARCRUSH_SYMBOLS.get(symbol.upper(), symbol.lower())
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/coins/{slug}/v1",
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json().get("data", {})
+                return {}
+        except Exception as e:
+            logger.warning(f"LunarCrush metrics error: {e}")
+            return {}
+
+    async def get_coin_time_series(self, symbol: str, interval: str = "1d") -> list:
+        """Get time series social data."""
+        slug = LUNARCRUSH_SYMBOLS.get(symbol.upper(), symbol.lower())
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/coins/{slug}/time-series/v2",
+                    params={"interval": interval, "bucket": "hour"},
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json().get("data", [])
+                return []
+        except Exception as e:
+            logger.warning(f"LunarCrush time_series error: {e}")
+            return []
+
+    async def get_trending(self) -> list:
+        """Get trending coins on social media."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/coins/list/v2",
+                    params={"sort": "galaxy_score", "limit": 50},
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json().get("data", [])
+                return []
+        except Exception as e:
+            logger.warning(f"LunarCrush trending error: {e}")
+            return []
+
+
+class TweetScoutClient:
+    """TweetScout API client for Crypto Twitter influencer tracking."""
+
+    BASE_URL = "https://api.tweetscout.io/v2"
+
+    def __init__(self, api_key: Optional[str] = None) -> None:
+        self._api_key = api_key or os.environ.get("TWEETSCOUT_API_KEY", "")
+        self._headers = {"x-api-key": self._api_key} if self._api_key else {}
+
+    async def get_token_mentions(self, symbol: str) -> dict:
+        """Get influencer mentions for a token symbol."""
+        if not self._api_key:
+            return {}
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/token/{symbol.upper()}/mentions",
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json()
+                return {}
+        except Exception as e:
+            logger.warning(f"TweetScout mentions error: {e}")
+            return {}
+
+    async def get_token_score(self, symbol: str) -> dict:
+        """Get TweetScout score for a token."""
+        if not self._api_key:
+            return {}
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/token/{symbol.upper()}/score",
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json()
+                return {}
+        except Exception as e:
+            logger.warning(f"TweetScout score error: {e}")
+            return {}
+
+    async def get_influencer_activity(self, symbol: str) -> list:
+        """Get recent influencer activity for a token."""
+        if not self._api_key:
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/token/{symbol.upper()}/influencers",
+                    params={"timeframe": "24h"},
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    return response.json().get("influencers", [])
+                return []
+        except Exception as e:
+            logger.warning(f"TweetScout influencers error: {e}")
+            return []
+
+
 class SmartMoneyTracker:
     """Combines multiple data sources for smart money analysis."""
 
@@ -248,8 +400,10 @@ class SmartMoneyTracker:
         self._birdeye = BirdeyeClient()
         self._solscan = SolscanClient()
         self._arkham = ArkhamClient()
+        self._lunarcrush = LunarCrushClient()
+        self._tweetscout = TweetScoutClient()
 
-    async def analyze(self, token_address: str) -> Optional[SmartMoneyReport]:
+    async def analyze(self, token_address: str, symbol: str = "") -> Optional[SmartMoneyReport]:
         """Perform comprehensive smart money analysis."""
         try:
             # Fetch data from all sources in parallel
@@ -258,6 +412,15 @@ class SmartMoneyTracker:
             top_traders = await self._birdeye.get_top_traders(token_address)
             solscan_holders = await self._solscan.get_token_holders(token_address)
             solscan_meta = await self._solscan.get_token_meta(token_address)
+
+            # Get token symbol from metadata if not provided
+            if not symbol:
+                symbol = birdeye_overview.get("symbol", "") or solscan_meta.get("symbol", "")
+
+            # Fetch social sentiment data
+            lunarcrush_data = await self._lunarcrush.get_coin_metrics(symbol) if symbol else {}
+            tweetscout_data = await self._tweetscout.get_token_mentions(symbol) if symbol else {}
+            influencers = await self._tweetscout.get_influencer_activity(symbol) if symbol else []
 
             # Analyze whale activity
             whale_activity = self._analyze_whale_activity(
@@ -275,11 +438,19 @@ class SmartMoneyTracker:
             # Analyze top trader signals
             trader_signals = self._analyze_traders(top_traders)
 
+            # Analyze social sentiment
+            social_sentiment = self._analyze_social(
+                lunarcrush_data,
+                tweetscout_data,
+                influencers
+            )
+
             # Calculate smart money score
             score, signal, confidence = self._calculate_score(
                 whale_activity,
                 holder_analysis,
-                trader_signals
+                trader_signals,
+                social_sentiment
             )
 
             return SmartMoneyReport(
@@ -287,6 +458,7 @@ class SmartMoneyTracker:
                 whale_activity=whale_activity,
                 holder_analysis=holder_analysis,
                 trader_signals=trader_signals,
+                social_sentiment=social_sentiment,
                 smart_money_score=score,
                 signal=signal,
                 confidence=confidence,
@@ -417,58 +589,176 @@ class SmartMoneyTracker:
             profitable_holder_pct=round(profitable_pct, 2),
         )
 
+    def _analyze_social(
+        self,
+        lunarcrush: dict,
+        tweetscout: dict,
+        influencers: list
+    ) -> SocialSentiment:
+        """Analyze social media sentiment from LunarCrush and TweetScout."""
+        # LunarCrush metrics
+        galaxy_score = lunarcrush.get("galaxy_score", 0) or 0
+        social_volume = lunarcrush.get("social_volume", 0) or 0
+        social_volume_24h = lunarcrush.get("social_volume_24h", social_volume) or 0
+        social_volume_prev = lunarcrush.get("social_volume_24h_previous", social_volume_24h) or social_volume_24h
+
+        # Calculate mentions change
+        mentions_change = 0
+        if social_volume_prev > 0:
+            mentions_change = ((social_volume_24h - social_volume_prev) / social_volume_prev) * 100
+
+        # Sentiment from LunarCrush
+        sentiment_raw = lunarcrush.get("sentiment", 0) or 0  # Usually 0-5 scale
+        # Normalize to -1 to 1
+        sentiment_score = (sentiment_raw - 2.5) / 2.5 if sentiment_raw else 0
+
+        # Determine sentiment label
+        if sentiment_score > 0.3:
+            sentiment = "BULLISH"
+        elif sentiment_score < -0.3:
+            sentiment = "BEARISH"
+        else:
+            sentiment = "NEUTRAL"
+
+        # TweetScout influencer data
+        influencer_mentions = len(influencers)
+        # Use TweetScout mentions as fallback if LunarCrush has no data
+        if social_volume_24h == 0 and tweetscout:
+            social_volume_24h = tweetscout.get("mentions_24h", 0) or 0
+
+        # Check if trending (LunarCrush rank)
+        trending_rank = lunarcrush.get("rank", 0) or 0
+        if trending_rank > 100:
+            trending_rank = 0  # Not trending
+
+        # Calculate combined social score (0-100)
+        social_score = 50  # Start neutral
+
+        # Galaxy score contribution (0-30 points)
+        social_score += min(30, galaxy_score * 0.3)
+
+        # Mentions change contribution (+/- 15 points)
+        if mentions_change > 50:
+            social_score += 15
+        elif mentions_change > 20:
+            social_score += 10
+        elif mentions_change > 0:
+            social_score += 5
+        elif mentions_change < -30:
+            social_score -= 10
+        elif mentions_change < -10:
+            social_score -= 5
+
+        # Sentiment contribution (+/- 10 points)
+        social_score += int(sentiment_score * 10)
+
+        # Influencer mentions contribution (0-15 points)
+        if influencer_mentions >= 5:
+            social_score += 15
+        elif influencer_mentions >= 3:
+            social_score += 10
+        elif influencer_mentions >= 1:
+            social_score += 5
+
+        # Trending bonus
+        if 0 < trending_rank <= 10:
+            social_score += 10
+        elif 0 < trending_rank <= 25:
+            social_score += 5
+
+        # Clamp score
+        social_score = max(0, min(100, int(social_score)))
+
+        return SocialSentiment(
+            social_score=social_score,
+            mentions_24h=int(social_volume_24h),
+            mentions_change_pct=round(mentions_change, 2),
+            sentiment=sentiment,
+            sentiment_score=round(sentiment_score, 2),
+            influencer_mentions=influencer_mentions,
+            trending_rank=trending_rank,
+            galaxy_score=int(galaxy_score),
+        )
+
     def _calculate_score(
         self,
         whale: WhaleActivity,
         holders: HolderAnalysis,
-        traders: TopTraderSignal
+        traders: TopTraderSignal,
+        social: SocialSentiment
     ) -> tuple[int, str, str]:
         """Calculate overall smart money score and signal."""
         score = 50  # Start neutral
 
-        # Whale activity signals (+/- 20 points)
+        # Whale activity signals (+/- 15 points)
         if whale.whale_net_flow > 0:
-            score += min(15, whale.whale_net_flow / 10000)  # Positive flow = bullish
+            score += min(12, whale.whale_net_flow / 10000)  # Positive flow = bullish
         else:
-            score += max(-15, whale.whale_net_flow / 10000)
+            score += max(-12, whale.whale_net_flow / 10000)
 
         buy_ratio = whale.whale_buys_24h / (whale.whale_buys_24h + whale.whale_sells_24h + 1)
         if buy_ratio > 0.6:
-            score += 10
+            score += 8
         elif buy_ratio < 0.4:
-            score -= 10
+            score -= 8
 
-        # Holder growth signals (+/- 15 points)
+        # Holder growth signals (+/- 12 points)
         if holders.holder_change_24h > 100:
-            score += 10
+            score += 8
         elif holders.holder_change_24h > 50:
-            score += 5
+            score += 4
         elif holders.holder_change_24h < -50:
-            score -= 10
+            score -= 8
 
-        # Concentration risk (-10 points max)
+        # Concentration risk (-8 points max)
         if holders.top_10_concentration > 70:
-            score -= 10
+            score -= 8
         elif holders.top_10_concentration > 50:
-            score -= 5
+            score -= 4
 
-        # Fresh wallet risk (-5 points)
+        # Fresh wallet risk (-4 points)
         if holders.fresh_wallet_pct > 30:
-            score -= 5
+            score -= 4
 
-        # Top trader signals (+/- 15 points)
+        # Top trader signals (+/- 12 points)
         if traders.top_traders_buying > traders.top_traders_selling * 1.5:
-            score += 15
+            score += 12
         elif traders.top_traders_selling > traders.top_traders_buying * 1.5:
-            score -= 15
+            score -= 12
 
         if traders.profitable_holder_pct > 60:
-            score += 5
+            score += 4
         elif traders.profitable_holder_pct < 40:
+            score -= 4
+
+        # Social sentiment signals (+/- 15 points) - NEW
+        if social.social_score >= 70:
+            score += 10
+        elif social.social_score >= 60:
+            score += 5
+        elif social.social_score <= 30:
+            score -= 10
+        elif social.social_score <= 40:
             score -= 5
 
+        # Sentiment boost/penalty
+        if social.sentiment == "BULLISH":
+            score += 5
+        elif social.sentiment == "BEARISH":
+            score -= 5
+
+        # Influencer mentions bonus
+        if social.influencer_mentions >= 3:
+            score += 5
+        elif social.influencer_mentions >= 1:
+            score += 2
+
+        # Trending bonus
+        if 0 < social.trending_rank <= 25:
+            score += 5
+
         # Clamp score
-        score = max(0, min(100, score))
+        score = max(0, min(100, int(score)))
 
         # Determine signal
         if score >= 65:
@@ -483,11 +773,12 @@ class SmartMoneyTracker:
             1 if whale.whale_buys_24h > 0 else 0,
             1 if holders.total_holders > 0 else 0,
             1 if traders.top_traders_buying + traders.top_traders_selling > 0 else 0,
+            1 if social.mentions_24h > 0 or social.galaxy_score > 0 else 0,
         ])
 
-        if data_quality >= 3 and (score >= 70 or score <= 30):
+        if data_quality >= 4 and (score >= 70 or score <= 30):
             confidence = "HIGH"
-        elif data_quality >= 2:
+        elif data_quality >= 3:
             confidence = "MEDIUM"
         else:
             confidence = "LOW"
