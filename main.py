@@ -16,6 +16,7 @@ from fetcher import DEXScreenerClient
 from notifier import TelegramNotifier
 from security_checker import SecurityChecker
 from signal_store import RedisSignalStore
+from smart_money import SmartMoneyTracker
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +59,12 @@ class SignalStore:
             "bundle_percentage": signal.bundle_percentage,
             "security_score": signal.security_score,
             "bundle_penalty": signal.bundle_penalty,
+            "smart_money_score": signal.smart_money_score,
+            "smart_money_signal": signal.smart_money_signal,
+            "smart_money_confidence": signal.smart_money_confidence,
+            "whale_net_flow": signal.whale_net_flow,
+            "top_traders_buying": signal.top_traders_buying,
+            "top_traders_selling": signal.top_traders_selling,
             "liquidity_score": signal.liquidity_score,
             "volume_ratio_score": signal.volume_ratio_score,
             "momentum_score": signal.momentum_score,
@@ -104,6 +111,7 @@ class CryptoSignalBot:
         self._fetcher = DEXScreenerClient(config)
         self._analyzer = SignalAnalyzer(config.scoring_weights)
         self._security_checker = SecurityChecker(config.request_timeout)
+        self._smart_money_tracker = SmartMoneyTracker()
         self._notifier = TelegramNotifier(config)
         self._signal_store = signal_store
         self._redis_store = redis_store
@@ -179,8 +187,15 @@ class CryptoSignalBot:
                     token_config.address
                 )
 
-                # Analyze signal with security data
-                signal_result = self._analyzer.analyze(token_data, security_report)
+                # Fetch smart money data
+                smart_money_report = await self._smart_money_tracker.analyze(
+                    token_config.address
+                )
+
+                # Analyze signal with security and smart money data
+                signal_result = self._analyzer.analyze(
+                    token_data, security_report, smart_money_report
+                )
 
                 # Store scan result (local + Redis)
                 self._signal_store.add_scan(signal_result)

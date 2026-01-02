@@ -19,6 +19,7 @@ COPY analyzer.py .
 COPY notifier.py .
 COPY security_checker.py .
 COPY signal_store.py .
+COPY smart_money.py .
 COPY main.py .
 
 # Create non-root user for security

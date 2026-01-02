@@ -112,6 +112,16 @@ class TelegramNotifier:
             warnings_list = "\n".join(f"  • {w}" for w in signal.security_warnings[:5])
             warnings_text = f"\n<b>Warnings:</b>\n{warnings_list}"
 
+        # Smart money signal emoji
+        sm_emoji = {
+            "ACCUMULATION": "🟢 ACCUMULATION",
+            "DISTRIBUTION": "🔴 DISTRIBUTION",
+            "NEUTRAL": "⚪ NEUTRAL",
+        }.get(signal.smart_money_signal, "⚪ NEUTRAL")
+
+        # Whale flow direction
+        whale_flow = "📈" if signal.whale_net_flow > 0 else "📉" if signal.whale_net_flow < 0 else "➡️"
+
         message = f"""
 <b>🚀 CRYPTO SIGNAL ALERT</b>
 
@@ -129,8 +139,17 @@ class TelegramNotifier:
 <b>PoP Factors:</b>
 • Momentum: {signal.pop.factors.get('momentum', 0)}%
 • Buy Pressure: {signal.pop.factors.get('buy_pressure', 0)}%
+• Smart Money: {signal.pop.factors.get('smart_money', 0)}%
 • Security: {signal.pop.factors.get('security', 0)}%
 • Bundle Impact: -{signal.pop.factors.get('bundle_impact', 0)}%
+
+━━━━━━━━━━━━━━━━━━━━
+
+<b>🐋 SMART MONEY ANALYSIS</b>
+<b>Signal:</b> {sm_emoji} ({signal.smart_money_confidence})
+<b>SM Score:</b> {signal.smart_money_score}/100
+<b>Whale Flow:</b> {whale_flow} ${abs(signal.whale_net_flow):,.0f}
+<b>Top Traders:</b> 🟢 {signal.top_traders_buying} buying | 🔴 {signal.top_traders_selling} selling
 
 ━━━━━━━━━━━━━━━━━━━━
 

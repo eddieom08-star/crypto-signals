@@ -1,4 +1,4 @@
-"""Signal analyzer with technical indicators, security scoring, and PoP calculation."""
+"""Signal analyzer with technical indicators, security scoring, smart money, and PoP calculation."""
 
 import logging
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from typing import Optional
 from config import ScoringWeights
 from fetcher import TokenData
 from security_checker import SecurityReport, RiskLevel
+from smart_money import SmartMoneyReport
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,14 @@ class SignalAnalysis:
     security_score: int
     lock_score: int
     bundle_penalty: int
+
+    # Smart money scores
+    smart_money_score: int
+    smart_money_signal: str  # ACCUMULATION, DISTRIBUTION, NEUTRAL
+    smart_money_confidence: str  # HIGH, MEDIUM, LOW
+    whale_net_flow: float
+    top_traders_buying: int
+    top_traders_selling: int
 
     # PoP analysis
     pop: PoPAnalysis
@@ -77,12 +86,13 @@ class SignalAnalyzer:
 
     # PoP model weights (based on historical patterns)
     POP_WEIGHTS = {
-        "momentum": 0.20,
-        "volume": 0.15,
-        "buy_pressure": 0.20,
+        "momentum": 0.15,
+        "volume": 0.10,
+        "buy_pressure": 0.15,
         "liquidity": 0.10,
-        "security": 0.25,
+        "security": 0.20,
         "trend": 0.10,
+        "smart_money": 0.20,  # New: smart money signals
     }
 
     def __init__(self, weights: Optional[ScoringWeights] = None) -> None:
@@ -91,9 +101,10 @@ class SignalAnalyzer:
     def analyze(
         self,
         token_data: TokenData,
-        security_report: Optional[SecurityReport] = None
+        security_report: Optional[SecurityReport] = None,
+        smart_money_report: Optional[SmartMoneyReport] = None
     ) -> SignalAnalysis:
-        """Analyze token data with security integration and PoP calculation."""
+        """Analyze token data with security, smart money integration, and PoP calculation."""
 
         # Calculate technical scores
         liquidity_score = self._score_liquidity(token_data.liquidity_usd)
@@ -109,6 +120,9 @@ class SignalAnalyzer:
         security_score, lock_score, bundle_penalty, security_warnings = \
             self._score_security(security_report)
 
+        # Calculate smart money scores
+        sm_score, sm_signal, sm_confidence, sm_bonus = self._score_smart_money(smart_money_report)
+
         # Total technical score (before security adjustments)
         base_score = (
             liquidity_score +
@@ -118,13 +132,14 @@ class SignalAnalyzer:
             trend_score
         )
 
-        # Apply security adjustments
-        total_score = max(0, base_score + security_score - bundle_penalty)
+        # Apply security and smart money adjustments
+        total_score = max(0, min(100, base_score + security_score - bundle_penalty + sm_bonus))
 
         # Calculate PoP
         pop = self._calculate_pop(
             token_data,
             security_report,
+            smart_money_report,
             liquidity_score,
             volume_ratio_score,
             momentum_score,
@@ -132,6 +147,11 @@ class SignalAnalyzer:
             trend_score,
             bundle_penalty
         )
+
+        # Extract smart money details
+        whale_net_flow = smart_money_report.whale_activity.whale_net_flow if smart_money_report else 0
+        top_traders_buying = smart_money_report.trader_signals.top_traders_buying if smart_money_report else 0
+        top_traders_selling = smart_money_report.trader_signals.top_traders_selling if smart_money_report else 0
 
         # Calculate entry/exit points (adjusted for risk)
         entry_price = token_data.price_usd
@@ -169,6 +189,12 @@ class SignalAnalyzer:
             security_score=security_score,
             lock_score=lock_score,
             bundle_penalty=bundle_penalty,
+            smart_money_score=sm_score,
+            smart_money_signal=sm_signal,
+            smart_money_confidence=sm_confidence,
+            whale_net_flow=whale_net_flow,
+            top_traders_buying=top_traders_buying,
+            top_traders_selling=top_traders_selling,
             pop=pop,
             entry_price=entry_price,
             stop_loss=stop_loss,
@@ -248,10 +274,56 @@ class SignalAnalyzer:
 
         return security_score, lock_score, bundle_penalty, warnings
 
+    def _score_smart_money(
+        self,
+        report: Optional[SmartMoneyReport]
+    ) -> tuple[int, str, str, int]:
+        """Score smart money signals. Returns (score, signal, confidence, bonus_points)."""
+        if not report:
+            return 50, "NEUTRAL", "LOW", 0
+
+        score = report.smart_money_score
+        signal = report.signal
+        confidence = report.confidence
+
+        # Calculate bonus/penalty based on smart money activity
+        bonus = 0
+
+        # Accumulation signal = bullish
+        if signal == "ACCUMULATION":
+            bonus += 10 if confidence == "HIGH" else 5
+
+        # Distribution signal = bearish
+        elif signal == "DISTRIBUTION":
+            bonus -= 10 if confidence == "HIGH" else 5
+
+        # Whale net flow bonus
+        whale = report.whale_activity
+        if whale.whale_net_flow > 50000:
+            bonus += 5
+        elif whale.whale_net_flow < -50000:
+            bonus -= 5
+
+        # Top traders signal
+        traders = report.trader_signals
+        if traders.top_traders_buying > traders.top_traders_selling * 2:
+            bonus += 5
+        elif traders.top_traders_selling > traders.top_traders_buying * 2:
+            bonus -= 5
+
+        # High profitable holder % is bullish
+        if traders.profitable_holder_pct > 70:
+            bonus += 3
+        elif traders.profitable_holder_pct < 30:
+            bonus -= 3
+
+        return score, signal, confidence, bonus
+
     def _calculate_pop(
         self,
         token_data: TokenData,
         security_report: Optional[SecurityReport],
+        smart_money_report: Optional[SmartMoneyReport],
         liquidity_score: int,
         volume_ratio_score: int,
         momentum_score: int,
@@ -274,6 +346,17 @@ class SignalAnalyzer:
         else:
             security_norm = 0.5  # Neutral if unknown
 
+        # Smart money factor (0-100 score normalized to 0-1)
+        if smart_money_report:
+            smart_money_norm = smart_money_report.smart_money_score / 100
+            # Boost for accumulation, reduce for distribution
+            if smart_money_report.signal == "ACCUMULATION":
+                smart_money_norm = min(1.0, smart_money_norm * 1.2)
+            elif smart_money_report.signal == "DISTRIBUTION":
+                smart_money_norm = max(0, smart_money_norm * 0.8)
+        else:
+            smart_money_norm = 0.5  # Neutral if unknown
+
         # Bundle penalty reduces PoP significantly
         bundle_factor = max(0, 1 - (bundle_penalty / 30))
 
@@ -284,7 +367,8 @@ class SignalAnalyzer:
             buy_pressure_norm * self.POP_WEIGHTS["buy_pressure"] +
             liquidity_norm * self.POP_WEIGHTS["liquidity"] +
             security_norm * self.POP_WEIGHTS["security"] +
-            trend_norm * self.POP_WEIGHTS["trend"]
+            trend_norm * self.POP_WEIGHTS["trend"] +
+            smart_money_norm * self.POP_WEIGHTS["smart_money"]
         )
 
         # Apply bundle factor
@@ -314,8 +398,9 @@ class SignalAnalyzer:
             1 if liquidity_score > 0 else 0,
             1 if volume_ratio_score > 0 else 0,
             1 if security_report is not None else 0,
+            1 if smart_money_report is not None else 0,
             1 if token_data.txns_buys_1h + token_data.txns_sells_1h > 50 else 0,
-        ]) / 4
+        ]) / 5
 
         if data_completeness >= 0.75 and pop_score >= 60:
             confidence = "HIGH"
@@ -343,6 +428,7 @@ class SignalAnalyzer:
             "liquidity": round(liquidity_norm * 100),
             "security": round(security_norm * 100),
             "trend": round(trend_norm * 100),
+            "smart_money": round(smart_money_norm * 100),
             "bundle_impact": round((1 - bundle_factor) * 100),
         }
 
